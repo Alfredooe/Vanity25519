@@ -19,11 +19,31 @@ const SSH_PUBKEY_HEADER: [u8; 19] = [
 fn main() {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Usage: {} <target>", args[0]);
+        eprintln!("Usage: {} <target> [--threads N]", args[0]);
         std::process::exit(1);
     }
 
-    let target = args[1].to_lowercase();
+    let mut target = String::new();
+    let mut threads: Option<usize> = None;
+    let mut i = 1;
+    while i < args.len() {
+        if args[i] == "--threads" && i + 1 < args.len() {
+            threads = args[i + 1].parse().ok();
+            i += 2;
+        } else if target.is_empty() {
+            target = args[i].to_lowercase();
+            i += 1;
+        } else {
+            i += 1;
+        }
+    }
+    if target.is_empty() {
+        eprintln!("Usage: {} <target> [--threads N]", args[0]);
+        std::process::exit(1);
+    }
+    if let Some(n) = threads {
+        rayon::ThreadPoolBuilder::new().num_threads(n).build_global().ok();
+    }
     let patterns = [
         format!("+{}+", target),
         format!("+{}/", target),
@@ -40,14 +60,16 @@ fn main() {
     println!("Target: \"{}\"", target);
     println!("Match rule: [+|/]TARGET[+|/]");
 
-    (0..rayon::current_num_threads())
+    let start = std::time::Instant::now();
+    let result = (0..rayon::current_num_threads())
         .into_par_iter()
-        .for_each(|_| {
+        .map(|_| {
             let mut rng = ChaCha20Rng::from_entropy();
             let mut local_count: u64 = 0;
             const BATCH_SIZE: u64 = 256;
             let mut blob = [0u8; 51];
             blob[..19].copy_from_slice(&SSH_PUBKEY_HEADER);
+            let mut found_key = None;
 
             while !found.load(Ordering::Relaxed) {
                 let key = SigningKey::generate(&mut rng);
@@ -79,19 +101,34 @@ fn main() {
                         .collect::<Vec<_>>()
                         .join("\n");
 
-                    println!("\n\nMATCH FOUND");
-                    println!(
-                        "Attempts: ~{}",
-                        final_count + (local_count % BATCH_SIZE)
-                    );
-                    println!("\nSSH Public Key (authorized_keys):");
-                    println!("ssh-ed25519 {}", ssh_b64);
-                    println!("\nPrivate Key (PEM):");
-                    println!("-----BEGIN PRIVATE KEY-----");
-                    println!("{}", pem_body);
-                    println!("-----END PRIVATE KEY-----");
+                    found_key = Some((final_count + (local_count % BATCH_SIZE), ssh_b64, pem_body));
                     break;
                 }
             }
+            (local_count, found_key)
+        })
+        .reduce(|| (0u64, None), |mut acc, x| {
+            acc.0 += x.0;
+            if acc.1.is_none() && x.1.is_some() {
+                acc.1 = x.1;
+            }
+            acc
         });
+
+    let elapsed = start.elapsed().as_secs_f64();
+    let total_attempts = attempts.load(Ordering::Relaxed);
+    let avg_rate = if elapsed > 0.0 { total_attempts as f64 / elapsed } else { 0.0 };
+
+    if let Some((final_count, ssh_b64, pem_body)) = result.1 {
+        println!("\n\nMATCH FOUND");
+        println!("Attempts: ~{}", final_count);
+        println!("\nSSH Public Key (authorized_keys):");
+        println!("ssh-ed25519 {}", ssh_b64);
+        println!("\nPrivate Key (PEM):");
+        println!("-----BEGIN PRIVATE KEY-----");
+        println!("{}", pem_body);
+        println!("-----END PRIVATE KEY-----");
+    }
+    println!("\nElapsed: {:.2}s", elapsed);
+    println!("Average rate: {:.2} keys/sec", avg_rate);
 }

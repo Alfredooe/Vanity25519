@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
 # setup.sh — install dependencies, build, and run the vanity Ed25519 key search.
+
 # Usage: ./setup.sh <vanity-target>
-# Example: ./setup.sh alfie
+# Example: ./setup.sh
 set -euo pipefail
+
+
 
 TARGET="${1:?Usage: $0 <vanity-target>}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -27,6 +30,11 @@ export PATH="$HOME/.cargo/bin:$PATH"
 echo "[setup] Building..."
 cd "$SCRIPT_DIR"
 cargo build --release 2>&1
+
+# --- benchmark -----------------------------------------------------------
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+echo "[setup] Running benchmark (bench.sh) before setup..."
+"$SCRIPT_DIR/bench.sh"
 
 # --- run ------------------------------------------------------------------
 

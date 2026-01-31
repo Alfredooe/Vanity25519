@@ -14,32 +14,19 @@ if [[ ! -f "$BIN" ]]; then
 fi
 
 {
-    echo "============================================================"
-    echo "     vanity-ed25519 Performance Benchmark"
-    echo "============================================================"
-    echo ""
-
-    for threads in 1 4; do
-        export RAYON_NUM_THREADS=$threads
-        for run in 1 2; do
+    cpus=$(nproc)
+    for threads in 1 "$cpus"; do
+        for run in 1 2 3; do
             start_ns=$(date +%s%N)
-            output=$(timeout 30 "$BIN" "ab" 2>&1 || true)
+            output=$(timeout 30 "$BIN" ab --threads "$threads" 2>&1 || true)
             end_ns=$(date +%s%N)
 
-            # Extract attempt count from output
-            attempts=$(echo "$output" | grep -oP '(?<=Attempts: )[^$]*' | tail -1 || echo "0")
-            if [[ -z "$attempts" ]]; then
-                attempts=$(echo "$output" | grep -oP '(?<=Attempts: ~)[^$]*' | tail -1 || echo "0")
-            fi
+            # Extract attempt count and average rate from output
+            attempts=$(echo "$output" | grep -oP 'Attempts: ~\K[0-9]+' | tail -1 || echo "0")
+            avg_rate=$(echo "$output" | grep -oP 'Average rate: \K[0-9.]+(?= keys/sec)' | tail -1 || echo "0")
 
-            elapsed_ms=$(( (end_ns - start_ns) / 1_000_000 ))
-            if (( elapsed_ms > 0 )); then
-                throughput=$(( (attempts * 1000) / elapsed_ms ))
-            else
-                throughput=0
-            fi
-
-            echo "Run $run (threads=$threads): ~$attempts attempts in ${elapsed_ms}ms = $throughput keys/sec"
+            elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
+            echo "Run $run (threads=$threads): ~$attempts attempts in ${elapsed_ms}ms, avg rate: $avg_rate keys/sec"
         done
         echo ""
     done

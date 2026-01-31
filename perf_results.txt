@@ -1,0 +1,8 @@
+Run 1 (threads=1): ~9858 attempts in 158ms, avg rate: 64024.01 keys/sec
+Run 2 (threads=1): ~3319 attempts in 59ms, avg rate: 59657.55 keys/sec
+Run 3 (threads=1): ~18146 attempts in 293ms, avg rate: 62598.58 keys/sec
+
+Run 1 (threads=4): ~15337 attempts in 92ms, avg rate: 173753.05 keys/sec
+Run 2 (threads=4): ~49274 attempts in 292ms, avg rate: 172948.28 keys/sec
+Run 3 (threads=4): ~13412 attempts in 67ms, avg rate: 208878.54 keys/sec
+
