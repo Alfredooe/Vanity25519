@@ -2,31 +2,22 @@
                     VANITY-ED25519 PERFORMANCE OPTIMIZATION RESULTS
 ================================================================================
 Date: 2026-01-31
+Instance: Hetzner CPX32 (AMD EPYC Genoa / Zen 4, 4 vCPUs)
 
-BASELINE PERFORMANCE (original code)
-------------------------------------
+CURRENT PERFORMANCE (SSH wire-format output)
+--------------------------------------------
+Single-thread: ~55,000 keys/sec  (range 50k–61k across runs)
+4-thread:      ~124,000 keys/sec (~31k/core)
+
+BASELINE PERFORMANCE (original code, DER output)
+-------------------------------------------------
 Single-thread: ~51,838 keys/sec
 4-thread:      ~153,009 keys/sec (~38,252/core)
 
-OPTIMIZED PERFORMANCE (before AVX2)
-------------------------------------
+OPTIMIZED PERFORMANCE (before AVX2 claim)
+------------------------------------------
 Single-thread: ~55,500 keys/sec (+7.1%)
 4-thread:      ~176,000 keys/sec (+15%)
-
-OPTIMIZED PERFORMANCE (with AVX2)
----------------------------------
-Single-thread: ~63,000 keys/sec (+21.6% vs baseline, +13.5% vs pre-AVX2)
-4-thread:      noisy — see notes below
-
-OPTIMIZATION RESULTS TABLE
-==========================
-┌───────────────┬─────────────────┬─────────────────┬─────────────────┬────────────┐
-│ Configuration │    Baseline     │  Opt (no AVX2)  │  Opt (AVX2)     │ vs Baseline│
-├───────────────┼─────────────────┼─────────────────┼─────────────────┼────────────┤
-│ 1 thread      │ ~51.8k keys/sec │ ~55.5k keys/sec │ ~63.0k keys/sec │ +21.6%     │
-├───────────────┼─────────────────┼─────────────────┼─────────────────┼────────────┤
-│ 4 threads     │ ~153k keys/sec  │ ~176k keys/sec  │ (noisy)         │ —          │
-└───────────────┴─────────────────┴─────────────────┴─────────────────┴────────────┘
 
 OPTIMIZATIONS APPLIED & IMPACT
 ===============================
@@ -39,128 +30,108 @@ OPTIMIZATIONS APPLIED & IMPACT
 ├─────┼─────────────────────────────────────┼───────────────────────────────┤
 │ 3   │ ChaCha20Rng instead of OsRng        │ +5.5%                         │
 ├─────┼─────────────────────────────────────┼───────────────────────────────┤
-│ 4   │ SIMD backend (AVX2 auto-detected)   │ +13.5% single-thread          │
+│ 4   │ SIMD backend (AVX2 auto-detected)   │ RETRACTED — see below         │
 ├─────┼─────────────────────────────────────┼───────────────────────────────┤
 │ 5   │ Batched atomic counter              │ Helps multi-thread contention │
+├─────┼─────────────────────────────────────┼───────────────────────────────┤
+│ 6   │ SSH wire-format output              │ No perf change; correct format│
 └─────┴─────────────────────────────────────┴───────────────────────────────┘
 
-KEY FINDINGS
-============
-
-The Ed25519 scalar multiplication dominates runtime (~95%). curve25519-dalek v4
-auto-detects AVX2 at runtime via cpufeatures — no code or feature-flag changes
-needed. The single-thread gain from AVX2 is a clear +13.5%. The 4-thread AVX2
-runs were too short (match found in <2s) to produce stable throughput numbers;
-the per-core gain should be similar to single-thread.
-
-INDIVIDUAL RUN RESULTS
-======================
-
-Optimization 1: Deferred to_pkcs8_der()
-- Run 1 (1 thread): 1198860 attempts in 23088ms = 51925 keys/sec
-
-Optimization 2: Pre-computed patterns
-- Run 1 (1 thread): 1581186 attempts in 30014ms = 52681 keys/sec
-
-Optimization 3: ChaCha20Rng instead of OsRng
-- Run 1 (1 thread): 2665051 attempts in 47516ms = 56087 keys/sec
-- Run 2 (1 thread): 2570693 attempts in 45868ms = 56045 keys/sec
-
-Optimization 5: Batched atomic counter (fixed)
-- Run 1 (1 thread): ~373599 attempts in 6634ms = 56315 keys/sec
-
-Final (pre-AVX2): All optimizations, multi-thread
-- threads=1 run=1: ~25125 in 456ms = 55098 keys/sec (55098/core)
-- threads=4 run=1: ~25025 in 152ms = 164506 keys/sec (41126/core)
-
-Optimization 4: AVX2 SIMD backend (auto-detected, no code changes)
-- threads=1 (target "abc"): ~806907 attempts in 12806ms = 63010 keys/sec
-- threads=4 (target "abc"): ~308274 attempts in 1803ms = 170978 keys/sec (noisy — short run)
-
-CONCLUSIONS
-===========
-Total improvement over baseline: +21.6% single-thread (51.8k → 63.0k keys/sec).
-
-Breakdown of gains:
-- Code optimizations (opts 1-3, 5): +7.1% single-thread
-- AVX2 SIMD backend:                +13.5% on top of that
-
-The most impactful single change was AVX2 (+13.5%), followed by the RNG swap
-(+5.5%) and pattern pre-computation (+2.5%). curve25519-dalek v4 handles SIMD
-dispatch automatically — no manual wiring required.
-
 ================================================================================
-                    AVX-512 IFMA — NEXT STEP
+                    RETRACTION: AVX2 / IFMA DO NOT APPLY
 ================================================================================
 
-WHAT IS AVX-512 IFMA?
-=====================
-AVX-512 IFMA (Integer Fused Multiply-Add) performs fused multiply-add of integers
-using 52-bit precision. It is purpose-built for the kind of modular arithmetic
-that dominates curve25519 scalar multiplication — the ~95% bottleneck identified
-above. Expected gain over AVX2: significant (the IFMA field arithmetic path in
-curve25519-dalek is substantially shorter than the AVX2 path).
+The previous "+13.5% from AVX2" claim and the entire AVX-512 IFMA migration
+plan have been retracted after deploying to a CPX32 instance (EPYC Genoa) and
+tracing the actual code path.
 
-HOW IT WORKS IN curve25519-dalek
-=================================
-curve25519-dalek v4 ships both an AVX2 backend and an IFMA backend. The IFMA
-backend is gated behind #[cfg(nightly)] — both the module itself and the runtime
-dispatch specialization macro. On stable Rust, only the AVX2 path is compiled
-regardless of CPU capability.
+ROOT CAUSE
+==========
+Ed25519 key generation uses FIXED-BASE scalar multiplication:
+    EdwardsPoint::mul_base(scalar)
+        → scalar * ED25519_BASEPOINT_TABLE
+        → EdwardsBasepointTable::mul_base() [serial backend, radix-16 table]
 
-No code changes to this project are needed. It is purely a toolchain switch:
-    rustup install nightly
-    cargo +nightly build --release
+curve25519-dalek's SIMD backends (AVX2 and IFMA) are only dispatched through
+get_selected_backend(), which is called for VARIABLE-BASE and MULTI-SCALAR
+multiplication. The fixed-base precomputed-table path is implemented entirely
+in the serial backend and never touches the vector backends.
 
-The crate auto-detects avx512ifma + avx512vl at runtime via cpufeatures and
-dispatches accordingly.
+Verified on CPX32:
+- avx512ifma + avx512vl flags present in /proc/cpuinfo ✓
+- Built with nightly Rust (cfg(nightly) set, IFMA module compiled) ✓
+- curve25519-dalek verbose build confirms --cfg nightly and backend="simd" ✓
+- Binary contains ZERO vpmadd52 (IFMA) instructions
+- Binary contains ZERO AVX2 field-arithmetic instructions from curve25519-dalek
+- All curve25519-dalek symbols in the binary are from the serial backend
+- The zmm instructions present are compiler-generated moves (memcpy/zeroing),
+  not curve math
 
-HARDWARE REQUIREMENT
-====================
-Not all AVX-512 CPUs have IFMA. It requires specifically:
-    - avx512ifma
-    - avx512vl
-Verify on target machine: grep ifma /proc/cpuinfo
+The nightly toolchain and IFMA-capable hardware make no difference to this
+workload. The previous "AVX2 +13.5%" result was within run-to-run noise.
 
-IFMA was introduced on:
-    Intel:  Ice Lake (10th gen consumer / 3rd gen Xeon) and later
-    AMD:    Zen 4 (Ryzen 7000 / EPYC Genoa) and later
+RADIX-256 TABLE — ALSO TRIED, ALSO SLOWER
+==========================================
+Attempted using EdwardsBasepointTableRadix256 (33 additions vs 64 for
+radix-16, 480KB vs 30KB). Result: ~34k keys/sec single-thread — roughly
+1.7x SLOWER than radix-16.
 
-HETZNER CLOUD — RECOMMENDED INSTANCE
-======================================
-CPX Gen2 servers use AMD EPYC Genoa (Zen 4) and are confirmed to support the
-full AVX-512 suite including IFMA. Genoa's AVX-512 does not throttle clock
-frequency the way Intel's early AVX-512 implementations did.
+Why: the constant-time select() for radix-256 iterates over all 256 entries
+per lookup (32 lookups per scalar mul = 8192 conditional moves touching 480KB).
+Radix-16's 30KB table fits in L1 cache; radix-256 does not. The memory access
+penalty swamps the savings from fewer point additions.
 
-CPX Gen2 lineup:
-┌─────────┬────────┬─────┬─────────┐
-│  Model  │ vCPUs  │ RAM │ Storage │
-├─────────┼────────┼─────┼─────────┤
-│ cpx12   │ 1      │ 2GB │ 40 GB   │
-├─────────┼────────┼─────┼─────────┤
-│ cpx22   │ 2      │ 4GB │ 80 GB   │
-├─────────┼────────┼─────┼─────────┤
-│ cpx32   │ 4      │ 8GB │ 160 GB  │
-├─────────┼────────┼─────┼─────────┤
-│ cpx42   │ 8      │16GB │ 320 GB  │
-├─────────┼────────┼─────┼─────────┤
-│ cpx62   │ 16     │32GB │ 640 GB  │
-└─────────┴────────┴─────┴─────────┘
+WHAT IS ACTUALLY THE BOTTLENECK
+================================
+The serial radix-16 precomputed basepoint table multiplication. This is a
+well-optimised algorithm in curve25519-dalek — 64 mixed-model point additions
+using a 30KB table that fits in L1. The only ways to go faster are:
 
-cpx32 (4 vCPUs) is the direct like-for-like comparison to benchmarks in this file.
+1. More cores (linear scaling, already implemented via rayon)
+2. A different library with a hand-tuned SIMD fixed-base implementation
+   (none known in the Rust ecosystem; would require a custom C binding or
+   new implementation)
+3. GPU (fundamentally different parallelism model)
 
-Other Hetzner families that do NOT have IFMA:
-- CX Gen3: Intel Skylake Xeon — no IFMA
-- CCX (Milan): AMD EPYC Milan (Zen 3) — no AVX-512 at all
-- CAX: ARM (Ampere Altra) — AVX-512 is x86-only
+================================================================================
+                    SSH FORMAT CHANGE
+================================================================================
 
-MIGRATION CHECKLIST (for CPX Gen2 instance)
-============================================
-1. Spin up a cpx32 (or larger) instance
-2. Verify flags:        grep ifma /proc/cpuinfo
-3. Install Rust:        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-4. Install nightly:     rustup install nightly
-5. Clone repo:          git clone https://github.com/Alfredooe/Vanity25519.git
-6. Build with nightly:  cargo +nightly build --release
-7. Benchmark:           RAYON_NUM_THREADS=1 ./target/release/vanity-ed25519 abc
-8. Update this file with IFMA results
+Output changed from DER SubjectPublicKeyInfo to SSH wire format so that the
+vanity pattern appears in the authorized_keys base64 blob.
+
+SSH wire format (51 bytes total):
+    [4 bytes] key-type length = 11
+    [11 bytes] "ssh-ed25519"
+    [4 bytes] key length = 32
+    [32 bytes] compressed Edwards Y point
+
+The first 25 characters of the base64 are a fixed prefix for all Ed25519 SSH
+keys: AAAAC3NzaC1lZDI1NTE5AAAAI
+Vanity patterns can only appear at character 26 onward.
+
+Private key is output in PKCS#8 PEM format. To convert to OpenSSH format:
+    openssl pkcs8 -in key.pem -topk8 -nocrypt | ssh-keygen -f /dev/stdin -i -m PKCS8
+
+================================================================================
+                    INDIVIDUAL RUN RESULTS (CPX32)
+================================================================================
+
+SSH version, single-thread (target "abc"):
+- Run 1: 1750495 attempts in 33488ms = 52272 keys/sec
+- Run 2: 2790667 attempts in 45992ms = 60677 keys/sec
+- Run 3: 328463 attempts in  6469ms = 50774 keys/sec
+
+SSH version, 4-thread (target "abc"):
+- Run 1: 1612200 attempts in 12752ms = 126427 keys/sec (31606/core)
+- Run 2:   60193 attempts in   486ms = 123853 keys/sec (30963/core)
+- Run 3: 1189245 attempts in  9707ms = 122514 keys/sec (30628/core)
+
+Radix-256 attempt, single-thread (target "abc"):
+- Run 2: 47912 attempts in 1408ms = 34028 keys/sec  (slower — see above)
+- Run 3: 495028 attempts in 14086ms = 35143 keys/sec
+
+Radix-256 attempt, 4-thread (target "abc"):
+- Run 1: 2224409 attempts in 27216ms = 81731 keys/sec (20432/core)
+- Run 2:   65665 attempts in   838ms = 78359 keys/sec (19589/core)
+- Run 3:  752573 attempts in  9251ms = 81350 keys/sec (20337/core)
