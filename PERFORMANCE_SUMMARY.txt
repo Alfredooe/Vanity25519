@@ -88,3 +88,79 @@ Breakdown of gains:
 The most impactful single change was AVX2 (+13.5%), followed by the RNG swap
 (+5.5%) and pattern pre-computation (+2.5%). curve25519-dalek v4 handles SIMD
 dispatch automatically — no manual wiring required.
+
+================================================================================
+                    AVX-512 IFMA — NEXT STEP
+================================================================================
+
+WHAT IS AVX-512 IFMA?
+=====================
+AVX-512 IFMA (Integer Fused Multiply-Add) performs fused multiply-add of integers
+using 52-bit precision. It is purpose-built for the kind of modular arithmetic
+that dominates curve25519 scalar multiplication — the ~95% bottleneck identified
+above. Expected gain over AVX2: significant (the IFMA field arithmetic path in
+curve25519-dalek is substantially shorter than the AVX2 path).
+
+HOW IT WORKS IN curve25519-dalek
+=================================
+curve25519-dalek v4 ships both an AVX2 backend and an IFMA backend. The IFMA
+backend is gated behind #[cfg(nightly)] — both the module itself and the runtime
+dispatch specialization macro. On stable Rust, only the AVX2 path is compiled
+regardless of CPU capability.
+
+No code changes to this project are needed. It is purely a toolchain switch:
+    rustup install nightly
+    cargo +nightly build --release
+
+The crate auto-detects avx512ifma + avx512vl at runtime via cpufeatures and
+dispatches accordingly.
+
+HARDWARE REQUIREMENT
+====================
+Not all AVX-512 CPUs have IFMA. It requires specifically:
+    - avx512ifma
+    - avx512vl
+Verify on target machine: grep ifma /proc/cpuinfo
+
+IFMA was introduced on:
+    Intel:  Ice Lake (10th gen consumer / 3rd gen Xeon) and later
+    AMD:    Zen 4 (Ryzen 7000 / EPYC Genoa) and later
+
+HETZNER CLOUD — RECOMMENDED INSTANCE
+======================================
+CPX Gen2 servers use AMD EPYC Genoa (Zen 4) and are confirmed to support the
+full AVX-512 suite including IFMA. Genoa's AVX-512 does not throttle clock
+frequency the way Intel's early AVX-512 implementations did.
+
+CPX Gen2 lineup:
+┌─────────┬────────┬─────┬─────────┐
+│  Model  │ vCPUs  │ RAM │ Storage │
+├─────────┼────────┼─────┼─────────┤
+│ cpx12   │ 1      │ 2GB │ 40 GB   │
+├─────────┼────────┼─────┼─────────┤
+│ cpx22   │ 2      │ 4GB │ 80 GB   │
+├─────────┼────────┼─────┼─────────┤
+│ cpx32   │ 4      │ 8GB │ 160 GB  │
+├─────────┼────────┼─────┼─────────┤
+│ cpx42   │ 8      │16GB │ 320 GB  │
+├─────────┼────────┼─────┼─────────┤
+│ cpx62   │ 16     │32GB │ 640 GB  │
+└─────────┴────────┴─────┴─────────┘
+
+cpx32 (4 vCPUs) is the direct like-for-like comparison to benchmarks in this file.
+
+Other Hetzner families that do NOT have IFMA:
+- CX Gen3: Intel Skylake Xeon — no IFMA
+- CCX (Milan): AMD EPYC Milan (Zen 3) — no AVX-512 at all
+- CAX: ARM (Ampere Altra) — AVX-512 is x86-only
+
+MIGRATION CHECKLIST (for CPX Gen2 instance)
+============================================
+1. Spin up a cpx32 (or larger) instance
+2. Verify flags:        grep ifma /proc/cpuinfo
+3. Install Rust:        curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+4. Install nightly:     rustup install nightly
+5. Clone repo:          git clone https://github.com/Alfredooe/Vanity25519.git
+6. Build with nightly:  cargo +nightly build --release
+7. Benchmark:           RAYON_NUM_THREADS=1 ./target/release/vanity-ed25519 abc
+8. Update this file with IFMA results
