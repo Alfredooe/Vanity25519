@@ -1,13 +1,10 @@
 #!/usr/bin/env bash
 # setup.sh — install dependencies, build, and run the vanity Ed25519 key search.
 
-# Usage: ./setup.sh <vanity-target>
-# Example: ./setup.sh
+# Usage: ./setup.sh [<target>] [--input <file>] [--output <file>] [--threads N]
+# All arguments are passed through to the vanity-ed25519 binary.
 set -euo pipefail
 
-
-
-TARGET="${1:?Usage: $0 <vanity-target>}"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # --- dependencies ---------------------------------------------------------
@@ -25,11 +22,18 @@ fi
 
 export PATH="$HOME/.cargo/bin:$PATH"
 
-# --- build ----------------------------------------------------------------
-
 echo "[setup] Building..."
+
+# --- build (native) -------------------------------------------------------
+echo "[setup] Building native Linux binary..."
 cd "$SCRIPT_DIR"
 cargo build --release 2>&1
+
+# --- build (windows) ------------------------------------------------------
+echo "[setup] Building Windows binary (x86_64-pc-windows-gnu)..."
+rustup target add x86_64-pc-windows-gnu 2>/dev/null || true
+cargo build --release --target x86_64-pc-windows-gnu 2>&1
+echo "[setup] Windows binary at: $SCRIPT_DIR/target/x86_64-pc-windows-gnu/release/vanity-ed25519.exe"
 
 # --- benchmark -----------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -38,6 +42,6 @@ echo "[setup] Running benchmark (bench.sh) before setup..."
 
 # --- run ------------------------------------------------------------------
 
-echo "[setup] Searching for vanity target: $TARGET"
+echo "[setup] Launching vanity-ed25519..."
 echo
-./target/release/vanity-ed25519 "$TARGET"
+./target/release/vanity-ed25519 "$@"

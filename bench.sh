@@ -22,7 +22,7 @@ fi
             end_ns=$(date +%s%N)
 
             # Extract attempt count and average rate from output
-            attempts=$(echo "$output" | grep -oP 'Attempts: ~\K[0-9]+' | tail -1 || echo "0")
+            attempts=$(echo "$output" | grep -oP 'Attempts: \K[0-9]+' | tail -1 || echo "0")
             avg_rate=$(echo "$output" | grep -oP 'Average rate: \K[0-9.]+(?= keys/sec)' | tail -1 || echo "0")
 
             elapsed_ms=$(( (end_ns - start_ns) / 1000000 ))
